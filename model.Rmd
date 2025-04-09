@@ -1,6 +1,6 @@
 ---
 title: "model"
-author: "djy"
+author: "Ding Junyuan"
 date: "2025-04-01"
 output: pdf_document
 ---
@@ -65,12 +65,12 @@ run_trial_place <- function(weights0, Wmult, sigma_pc, sigma_ac, PC_x, PC_y, Vde
     
     # Action selection with numerical stability
     Q <- AC_activation
-    Q[is.na(Q)] <- 0                      # 防止 NA
-    Q <- Q - max(Q, na.rm = TRUE)        # 数值稳定的 softmax
+    Q[is.na(Q)] <- 0                      
+    Q <- Q - max(Q, na.rm = TRUE)       
 
     ACsel <- exp(beta * Q)
-    ACsel[is.na(ACsel)] <- 0             # 进一步防止异常值
-    ACsel <- ACsel / (sum(ACsel) + 1e-8) # 避免除以 0
+    ACsel[is.na(ACsel)] <- 0             
+    ACsel <- ACsel / (sum(ACsel) + 1e-8) 
 
     # Sample action based on softmax probabilities
     ASrand <- runif(1)
@@ -205,12 +205,12 @@ run_trial_distance <- function(weights0, Wmult, sigma_dc, sigma_ac, DC, Vdecay, 
     
     # Action selection with numerical stability
     Q <- AC_activation
-    Q[is.na(Q)] <- 0                      # 防止 NA
-    Q <- Q - max(Q, na.rm = TRUE)        # 数值稳定的 softmax
+    Q[is.na(Q)] <- 0                      
+    Q <- Q - max(Q, na.rm = TRUE)        
 
     ACsel <- exp(beta * Q)
-    ACsel[is.na(ACsel)] <- 0             # 进一步防止异常值
-    ACsel <- ACsel / (sum(ACsel) + 1e-8) # 避免除以 0
+    ACsel[is.na(ACsel)] <- 0            
+    ACsel <- ACsel / (sum(ACsel) + 1e-8) 
 
     # Sample action based on softmax probabilities
     ASrand <- runif(1)
@@ -928,14 +928,14 @@ latency_stats <- apply(latency, c(1,2), function(x) c(mean = mean(x), se = sd(x)
 #plot target quadrant time
   
 target_dc <- target_quadrant
-# 计算 mean & SE
+# calculate mean & SE
 target_stats <- apply(target_quadrant, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
 
-# 展开为向量
+
 mean_target <- as.vector(target_stats[1,,])
 se_target <- as.vector(target_stats[2,,])
 
-# 构建 dataframe
+
 day <- rep(1:Ndays, each = Ntrials)
 trial <- rep(1:Ntrials, times = Ndays)
 
@@ -946,7 +946,7 @@ target_df_dc <- data.frame(
   SE = se_target
 )
 
-# 按天汇总
+
 target_day_dc <- target_df_dc %>%
   group_by(Day) %>%
   summarise(
@@ -955,7 +955,7 @@ target_day_dc <- target_df_dc %>%
   )%>%
   mutate(Model = "Distance Cell")
 
-# 绘图
+
 ggplot(target_day_dc, aes(x = Day, y = TargetTime)) +
   geom_line(color = "darkgreen") +
   geom_point(size = 2, color = "darkgreen") +
@@ -1064,7 +1064,7 @@ ggplot(opposite_compare, aes(x = Day, y = OppositeTime, color = Model)) +
 ## Statistic analysis
 
 ```{r}
-# === 把三个性能指标提取成长格式数据框 ===
+
 extract_long_df <- function(PMs_array, measure_name) {
   values <- as.vector(PMs_array)
   day <- rep(rep(1:Ndays, each = Ntrials), times = Nruns * 2)
@@ -1082,7 +1082,7 @@ extract_long_df <- function(PMs_array, measure_name) {
   )
 }
 
-# === 提取三个指标 ===
+
 df_latency <- extract_long_df(rbind(latency_pc, latency_dc), "Latency")
 df_target  <- extract_long_df(rbind(opposite_quadrant_pc, opposite_quadrant_dc), "Target")
 df_opposite <- extract_long_df(rbind(target_quadrant_pc, target_dc), "Opposite")
@@ -1092,7 +1092,7 @@ cat("===== LATENCY ANALYSIS =====\n")
 mod_latency <- lmer(Value ~ Day * Model + (1|Run), data = df_latency)
 summary(mod_latency)
 
-# 后续 pairwise 对比（每一天比较 Place vs Distance）
+
 em_latency <- emmeans(mod_latency, ~ Model | Day)
 pairs(em_latency)
 
@@ -1118,18 +1118,18 @@ pairs(em_opposite)
 ```{r}
 experimental_data <- read_excel("D:/data/WMdataLong.xlsx")
 colnames(experimental_data)[1] <- "Variable"
-# 定义变量映射：latency (1), target quadrant time (2), opposite quadrant time (10)
+# latency (1), target quadrant time (2), opposite quadrant time (10)
 behavior_vars <- list(
   latency = 1,
   target = 2,
   opposite = 10
 )
 
-# 筛选条件：只保留 variable platform + C57BL/6
+#variable platform + C57BL/6
 data_c57 <- experimental_data %>%
   filter(Condition == 2, Strain == 1)
 
-# 可视化函数
+
 plot_behavior <- function(df, varcode, varname, ylabel) {
   df_var <- df %>%
     filter(Variable == varcode) %>%
@@ -1152,7 +1152,7 @@ plot_behavior <- function(df, varcode, varname, ylabel) {
     theme_minimal()
 }
 
-# 绘制三张图
+
 plot_behavior(data_c57, behavior_vars$latency, "Latency", "Latency (s)")
 plot_behavior(data_c57, behavior_vars$target, "Target Quadrant Time", "Proportion in Target Quadrant")
 plot_behavior(data_c57, behavior_vars$opposite, "Opposite Quadrant Time", "Proportion in Opposite Quadrant")
@@ -1160,7 +1160,7 @@ plot_behavior(data_c57, behavior_vars$opposite, "Opposite Quadrant Time", "Propo
 
 ```{r}
 
-# 从实验数据中提取 latency（Variable == 1）并汇总
+
 exp_latency <- data_c57 %>%
   filter(Variable == 1) %>%
   group_by(Day) %>%
@@ -1194,7 +1194,7 @@ ggplot(combined_latency, aes(x = Day, y = Latency, color = Model, linetype = Sou
   scale_linetype_manual(values = c("Simulation" = "solid", "Experiment" = "dashed")) +
   theme(plot.title = element_text(hjust = 0.5))
 
-# 提取 Target Quadrant Time（Variable == 2）
+
 exp_target <- data_c57 %>%
   filter(Variable == 2) %>%
   group_by(Day) %>%
@@ -1204,7 +1204,7 @@ exp_target <- data_c57 %>%
   ) %>%
   mutate(Model = "Actual", Source = "Experiment")
 
-# 提取 Opposite Quadrant Time（Variable == 10）
+
 exp_opposite <- data_c57 %>%
   filter(Variable == 10) %>%
   group_by(Day) %>%
@@ -1214,7 +1214,7 @@ exp_opposite <- data_c57 %>%
   ) %>%
   mutate(Model = "Actual", Source = "Experiment")
 
-# 乘以100将比例转为百分比
+
 exp_target <- exp_target %>%
   mutate(TargetTime = TargetTime * 100, SE = SE * 100)
 
@@ -1232,7 +1232,7 @@ opposite_day_dc$Model <- "Distance Cell"
 opposite_day_pc$Source <- "Simulation"
 opposite_day_dc$Source <- "Simulation"
 
-# 统一列名
+
 target_day_pc <- rename(target_day_pc, TargetTime = TargetTime)
 target_day_dc <- rename(target_day_dc, TargetTime = TargetTime)
 
