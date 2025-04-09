@@ -1125,7 +1125,7 @@ behavior_vars <- list(
   opposite = 10
 )
 
-#variable platform + C57BL/6
+
 data_c57 <- experimental_data %>%
   filter(Condition == 2, Strain == 1)
 
