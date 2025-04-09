@@ -3,6 +3,10 @@ title: "model"
 author: "Ding Junyuan"
 date: "2025-04-01"
 output: pdf_document
+latex_engine: xelatex
+header-includes:
+  - \usepackage[utf8]{inputenc}
+  - \DeclareUnicodeCharacter{FF08}{\textbf{(}}
 ---
 
 ```{r setup, include=FALSE}
