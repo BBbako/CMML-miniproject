@@ -1116,7 +1116,7 @@ pairs(em_opposite)
 ## Deal with the real experimental data
 
 ```{r}
-experimental_data <- read_excel("WMdataLong.xlsx")
+experimental_data <- read_excel("MWMdata.xlsx")
 colnames(experimental_data)[1] <- "Variable"
 # latency (1), target quadrant time (2), opposite quadrant time (10)
 behavior_vars <- list(
