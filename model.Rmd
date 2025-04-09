@@ -1,0 +1,1292 @@
+---
+title: "model"
+author: "djy"
+date: "2025-04-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(pbkrtest)
+library(readxl)
+
+```
+
+## Place Cell Model Function
+
+```{r}
+run_trial_place <- function(weights0, Wmult, sigma_pc, sigma_ac, PC_x, PC_y, Vdecay, ac_const, beta, etdecay, lrate, discf, noise, platform_x, platform_y, starting_x, starting_y, speed, wall_pun) {
+  # FIXED PARAMETERS OF THE EXPERIMENT
+  
+  pool_diameter <- 1.4 #Maze diameter in metres (m)
+  platform_radius <- 0.06 #Platform radius
+  
+  N_pc <- 211 #Population of place cells
+  N_ac <- 36 #Population of action cells
+  which <- 0
+  
+  dist <- 0
+  wall_zone <- 0
+  quadrants <- c(0,0,0,0) #Percentage spent on each quadrant
+  
+  weights <- weights0 #Initialize modifiable weights
+  
+  el_tr <- matrix(rep(0, N_pc*N_ac), nrow = N_pc) #Initialize eligibility traces matrix
+  
+  #Initialize trajectories
+  track_x <- starting_x #Current position of trajectory is equal to the starting location of the animal
+  track_y <- starting_y
+  vel_x <- 0
+  vel_y <- 0
+  
+  # NAVIGATION LOOP
+  while ((track_x[length(track_x)] - platform_x)^2 + (track_y[length(track_y)] - platform_y)^2 > platform_radius^2)
+  {
+    weights <- weights*(1-noise) + matrix(runif(N_pc*N_ac), nrow = N_pc)*Wmult*noise
+    
+    #Calculate PC activation
+    PC_activation <- rep(0, N_pc)
+    for (i in 1:N_pc){
+      PC_activation[i] <- exp(-((track_x[length(track_x)] - PC_x[i])^2 + (track_y[length(track_y)] - PC_y[i])^2)/(2*sigma_pc^2))
+    }
+    
+    #Calculate AC activation (i.e. value of the action, Q)
+    if (length(track_x) > 1){
+      prevQ <- AC_activation[which] #Displays the Q value before movement
+    }
+    
+    AC_activation <- PC_activation %*% weights
+    
+    # Action selection with numerical stability
+    Q <- AC_activation
+    Q[is.na(Q)] <- 0                      # 防止 NA
+    Q <- Q - max(Q, na.rm = TRUE)        # 数值稳定的 softmax
+
+    ACsel <- exp(beta * Q)
+    ACsel[is.na(ACsel)] <- 0             # 进一步防止异常值
+    ACsel <- ACsel / (sum(ACsel) + 1e-8) # 避免除以 0
+
+    # Sample action based on softmax probabilities
+    ASrand <- runif(1)
+    ASsum <- 0
+    which <- 1
+    while (which < N_ac && !is.na(ASsum) && ASsum < ASrand) {
+      ASsum <- ASsum + ACsel[which]
+      which <- which + 1
+    }
+    
+    #Eligibility traces
+    el_tr <- el_tr * etdecay
+    
+    for (j in 1:N_ac){
+      itmp <- min(abs(j-which), N_ac-abs(j-which))
+      actgaus <- exp(-(itmp*itmp)/(2*sigma_ac*sigma_ac))
+      el_tr[,j] <- el_tr[,j] + actgaus*AC_activation[j]*t(t(PC_activation))
+    }
+    
+    vel_x = c(vel_x, (vel_x[length(vel_x)]+ac_const*cos(which/N_ac*2*pi))*Vdecay)
+    vel_y = c(vel_y, (vel_y[length(vel_y)]+ac_const*sin(which/N_ac*2*pi))*Vdecay)
+    #velocity per time step (not second)
+    track_x = c(track_x, track_x[length(track_x)]+vel_x[length(vel_x)])
+    track_y = c(track_y, track_y[length(track_y)]+vel_y[length(vel_y)])
+    
+    #Check if not out of bounds, reset location & speed if so
+    if (track_x[length(track_x)]^2 + track_y[length(track_y)]^2 > (pool_diameter/2)^2)
+    {
+      ratio = (track_x[length(track_x)]^2 + track_y[length(track_y)]^2)/((pool_diameter/2)^2)
+      track_x[length(track_x)] = track_x[length(track_x)]/sqrt(ratio)
+      track_y[length(track_y)] = track_y[length(track_y)]/sqrt(ratio)
+      vel_x[length(vel_x)] = track_x[length(track_x)] - track_x[length(track_x)-1]
+      vel_y[length(vel_y)] = track_y[length(track_y)] - track_y[length(track_y)-1]
+    }
+    
+    
+    if (length(track_x) > 2)
+    { if ((track_x[length(track_x)]  - platform_x)^2 + (track_y[length(track_y)]  - platform_y)^2 < platform_radius^2)
+    { rew = 10 } #found platform - reward
+      else if (track_x[length(track_x)]^2+track_y[length(track_y)]^2 > (0.99*pool_diameter/2)^2)
+      { rew = -wall_pun } #hit wall - punishment
+      else
+      { rew = 0 } #didn't find - no reward
+      
+      currQ = AC_activation[which]
+      tderr = rew + discf*currQ - prevQ #temporal difference error
+      weights = pmax(weights + lrate*tderr*el_tr, 0)
+    }
+    
+    laststep = sqrt((track_x[length(track_x)]-track_x[length(track_x)-1])^2 + (track_y[length(track_y)]-track_y[length(track_y)-1])^2)
+    dist = dist + laststep
+    
+    if (track_x[length(track_x)]^2 + track_y[length(track_y)]^2 > 0.8*(pool_diameter/2)^2)
+    { wall_zone = wall_zone + 1 }
+    else if (track_x[length(track_x)] > 0 && track_y[length(track_y)] > 0)
+    { quadrants[1] = quadrants[1] + 1 }
+    else if (track_x[length(track_x)] < 0 && track_y[length(track_y)] > 0)
+    { quadrants[2] = quadrants[2] + 1 }
+    else if (track_x[length(track_x)] < 0 && track_y[length(track_y)] < 0)
+    { quadrants[3] = quadrants[3] + 1 }
+    else
+    { quadrants[4] = quadrants[4] + 1 }
+    
+    if (length(track_x) > 100) # evaluate latency only after 100+ steps to be accurate
+    { speed_ts = mean(sqrt((vel_x[-1]^2+vel_y[-1]^2))) # speed in meters/time step
+    latency = (length(track_x)-1) * speed_ts / speed # convert to seconds
+    if (latency > 60) # if more than a minute, stop
+    { break }
+    }
+    
+  }
+  
+  latency <- length(track_x)-1 # latency in time steps
+  wall_zone <- wall_zone/latency
+  quadrants <- quadrants/latency
+  speed_ts <- mean(sqrt((vel_x[-1]^2+vel_y[-1]^2))) # speed in meters/time step
+  
+  latency <- latency * speed_ts / speed # latency in seconds
+  return(list(weights, track_x, track_y, vel_x, vel_y, dist, wall_zone, quadrants, latency))
+}
+```
+
+## Distance Cell Model Function
+
+```{r}
+run_trial_distance <- function(weights0, Wmult, sigma_dc, sigma_ac, DC, Vdecay, ac_const, beta, etdecay, lrate, discf, noise, platform_x, platform_y, starting_x, starting_y, speed, wall_pun)
+{
+  # FIXED PARAMETERS OF THE EXPERIMENT
+  
+  pool_diameter <- 1.4 #Maze diameter in metres (m)
+  platform_radius <- 0.06 #Platform radius
+  
+  N_dc <- 30 #Population of distance cells
+  N_ac <- 36 #Population of action cells
+  which <- 0
+  
+  dist <- 0
+  wall_zone <- 0
+  quadrants <- c(0,0,0,0) #Percentage spent on each quadrant
+  
+  weights <- weights0 #Initialize modifiable weights
+  
+  el_tr <- matrix(rep(0, N_dc*N_ac), nrow = N_dc) #Initialize eligibility traces matrix
+  
+  #Initialize trajectories
+  track_x <- starting_x #Current position of trajectory is equal to the starting location of the animal
+  track_y <- starting_y
+  vel_x <- 0
+  vel_y <- 0
+  
+  # NAVIGATION LOOP
+  while ((track_x[length(track_x)] - platform_x)^2 + (track_y[length(track_y)] - platform_y)^2 > platform_radius^2)
+  {
+    weights <- weights*(1-noise) + matrix(runif(N_dc*N_ac), nrow = N_dc)*Wmult*noise
+    
+    #current distance to the wall
+    dist.to.wall = pool_diameter/2-sqrt(track_x[length(track_x)]^2+track_y[length(track_y)]^2)
+    
+    #Calculate DC activation
+    DC_activation <- rep(0, N_dc)
+    for (i in 1:N_dc){
+      DC_activation[i] <- exp(-(dist.to.wall -DC[i])^2/(2*sigma_dc^2))
+    }
+    
+    #Calculate AC activation (i.e. value of the action, Q)
+    if (length(track_x) > 1){
+      prevQ <- AC_activation[which] #Displays the Q value before movement
+    }
+    
+    AC_activation <- DC_activation %*% weights
+    
+    
+    # Action selection with numerical stability
+    Q <- AC_activation
+    Q[is.na(Q)] <- 0                      # 防止 NA
+    Q <- Q - max(Q, na.rm = TRUE)        # 数值稳定的 softmax
+
+    ACsel <- exp(beta * Q)
+    ACsel[is.na(ACsel)] <- 0             # 进一步防止异常值
+    ACsel <- ACsel / (sum(ACsel) + 1e-8) # 避免除以 0
+
+    # Sample action based on softmax probabilities
+    ASrand <- runif(1)
+    ASsum <- 0
+    which <- 1
+    while (which < N_ac && !is.na(ASsum) && ASsum < ASrand) {
+      ASsum <- ASsum + ACsel[which]
+      which <- which + 1
+    }
+    
+    #Eligibility traces
+    el_tr <- el_tr * etdecay
+    
+    for (j in 1:N_ac){
+      itmp <- min(abs(j-which), N_ac-abs(j-which))
+      actgaus <- exp(-(itmp*itmp)/(2*sigma_ac*sigma_ac))
+      el_tr[,j] <- el_tr[,j] + actgaus*AC_activation[j]*t(t(DC_activation))
+    }
+    
+    #moving direction
+    # dir_x = 
+    if(track_x[length(track_x)]>=0){
+      central.angle = atan(track_y[length(track_y)]/(track_x[length(track_x)]))
+    } else {
+      central.angle = pi+atan(track_y[length(track_y)]/(track_x[length(track_x)]))
+    }
+    moving.dir = pi+central.angle+which/N_ac*2*pi
+    
+    
+    
+    vel_x = c(vel_x, (vel_x[length(vel_x)]+ac_const*cos(moving.dir))*Vdecay)
+    vel_y = c(vel_y, (vel_y[length(vel_y)]+ac_const*sin(moving.dir))*Vdecay)
+    #velocity per time step (not second)
+    track_x = c(track_x, track_x[length(track_x)]+vel_x[length(vel_x)])
+    track_y = c(track_y, track_y[length(track_y)]+vel_y[length(vel_y)])
+    
+    #Check if not out of bounds, reset location & speed if so
+    if (track_x[length(track_x)]^2 + track_y[length(track_y)]^2 > (pool_diameter/2)^2)
+    {
+      ratio = (track_x[length(track_x)]^2 + track_y[length(track_y)]^2)/((pool_diameter/2)^2)
+      track_x[length(track_x)] = track_x[length(track_x)]/sqrt(ratio)
+      track_y[length(track_y)] = track_y[length(track_y)]/sqrt(ratio)
+      vel_x[length(vel_x)] = track_x[length(track_x)] - track_x[length(track_x)-1]
+      vel_y[length(vel_y)] = track_y[length(track_y)] - track_y[length(track_y)-1]
+    }
+    
+    
+    if (length(track_x) > 2)
+    { if ((track_x[length(track_x)]  - platform_x)^2 + (track_y[length(track_y)]  - platform_y)^2 < platform_radius^2)
+    { rew = 10 } #found platform - reward
+      else if (track_x[length(track_x)]^2+track_y[length(track_y)]^2 > (0.99*pool_diameter/2)^2)
+      { rew = -wall_pun } #hit wall - punishment
+      else
+      { rew = 0 } #didn't find - no reward
+      
+      currQ = AC_activation[which]
+      tderr = rew + discf*currQ - prevQ #temporal difference error
+      weights = pmax(weights + lrate*tderr*el_tr, 0)
+    }
+    
+    laststep = sqrt((track_x[length(track_x)]-track_x[length(track_x)-1])^2 + (track_y[length(track_y)]-track_y[length(track_y)-1])^2)
+    dist = dist + laststep
+    
+    if (track_x[length(track_x)]^2 + track_y[length(track_y)]^2 > 0.8*(pool_diameter/2)^2)
+    { wall_zone = wall_zone + 1 }
+    else if (track_x[length(track_x)] > 0 && track_y[length(track_y)] > 0)
+    { quadrants[1] = quadrants[1] + 1 }
+    else if (track_x[length(track_x)] < 0 && track_y[length(track_y)] > 0)
+    { quadrants[2] = quadrants[2] + 1 }
+    else if (track_x[length(track_x)] < 0 && track_y[length(track_y)] < 0)
+    { quadrants[3] = quadrants[3] + 1 }
+    else
+    { quadrants[4] = quadrants[4] + 1 }
+    
+    if (length(track_x) > 100) # evaluate latency only after 100+ steps to be accurate
+    { speed_ts = mean(sqrt((vel_x[-1]^2+vel_y[-1]^2))) # speed in meters/time step
+    latency = (length(track_x)-1) * speed_ts / speed # convert to seconds
+    if (latency > 60) # if more than a minute, stop
+    { break }
+    }
+    
+  }
+  
+  latency <- length(track_x)-1 # latency in time steps
+  wall_zone <- wall_zone/latency
+  quadrants <- quadrants/latency
+  speed_ts <- mean(sqrt((vel_x[-1]^2+vel_y[-1]^2))) # speed in meters/time step
+  
+  latency <- latency * speed_ts / speed # latency in seconds
+  return(list(weights, track_x, track_y, vel_x, vel_y, dist, wall_zone, quadrants, latency))
+}
+```
+
+## Run Place Cell Model
+
+```{r}
+N_pc <- 211 #Population of place cells [100..300]
+N_ac <- 36 #Population of action cells [25..50]
+
+variable_platform <- 1
+plot_trajectories <- 0 #yes - 1, no - 0
+plot_cognitive_maps <- 0 #yes - 1, no - 0
+pln <- plot_trajectories + plot_cognitive_maps
+Nruns <- 25 #how many runs to run if not plotting anything
+
+pool_diameter <- 1.4 #Maze diameter (\phi) in metres (m)
+platform_radius <- 0.06 #Platform radius (m)
+sigma_pc <- 0.1 #place cell sigma (standard deviation), in meters [0.05..0.2]
+sigma_ac <- 2 #action cell sigma (standard deviation), in action cells [1..3]
+
+etdecay <- 0.83 #Eligibility trace decay (lambda) [0.75..0.95] LESS THAN GAMMA!
+beta <- 6 #Exploration-exploitation factor (\beta) [0.5..12]
+alpha <- 0.01 #Learning rate (\alpha) [0.005..0.02]
+gamma <- 0.85 #Discount factor (\gamma) [0.75..0.95]
+
+Vdecay <- 0.82 #velocity decay [0.75..0.95]
+ac_const <- 0.02 #acceleration const [0.01..0.03]
+Wnoise <- 0.0004 #Weight noise [0.0001..0.0007]
+Wmult <- 0.1 #Weight multiplier [0.05..0.15]
+hitwall <- 0.5 #punishment for hitting the wall [0..1]
+speed <- 0.175 #mouse speed (m/s) [0.1..0.25]
+
+Ntrials <- 4 #number of trials per day
+Ndays <- 8 #number of days
+
+platform_positions <- list(
+  c(cos(-pi/4)*pool_diameter/4, sin(-pi/4)*pool_diameter/4),
+  c(cos(pi/4)*pool_diameter/4, sin(pi/4)*pool_diameter/4)
+)
+
+if (pln > 0.5) {
+  PMs <- array(rep(0, 5 * Ndays * Ntrials), c(5, Ndays, Ntrials))
+} else {
+  PMs <- array(rep(0, 5 * Ndays * Ntrials * Nruns), c(5, Ndays, Ntrials, Nruns))
+}
+
+platform_x <- cos(-pi / 4) * pool_diameter / 4
+platform_y <- sin(-pi / 4) * pool_diameter / 4
+
+strad <- pool_diameter / 2 * 0.85
+starting_xs <- strad * c(cos(pi / 6), cos(pi / 3), cos(7 * pi / 6), cos(4 * pi / 3))
+starting_ys <- strad * c(sin(pi / 6), sin(pi / 3), sin(7 * pi / 6), sin(4 * pi / 3))
+th <- (0:100) / 50 * pi
+
+if (pln > 0.5) {
+  weights <- matrix(runif(N_pc * N_ac), nrow = N_pc) * Wmult
+  PC_x <- rep(0, N_pc)
+  PC_y <- rep(0, N_pc)
+  
+  for (i in 1:N_pc) {
+    PC_x[i] <- (runif(1) - 0.5) * pool_diameter
+    PC_y[i] <- (runif(1) - 0.5) * pool_diameter
+    while ((PC_x[i]^2 + PC_y[i]^2 > (pool_diameter / 2)^2)) {
+      PC_x[i] <- (runif(1) - 0.5) * pool_diameter
+      PC_y[i] <- (runif(1) - 0.5) * pool_diameter
+    }
+  }
+  
+  for (day in 1:Ndays) {
+    idxs <- sample(4)
+    for (trial in 1:Ntrials) {
+      if (variable_platform == 1){
+        whichplatform = sample(c(1, -1), 1)
+        platform_x = abs(platform_x) * whichplatform
+        platform_y = abs(platform_y) * whichplatform
+      }
+      
+      idx <- idxs[trial]
+      starting_x <- starting_xs[idx]
+      starting_y <- starting_ys[idx]
+      
+      modresults <- run_trial_place(weights, Wmult, sigma_pc, sigma_ac, PC_x, PC_y, Vdecay, ac_const, beta, etdecay, alpha, gamma, Wnoise, platform_x, platform_y, starting_x, starting_y, speed, hitwall)
+      weights <- modresults[[1]]
+      track_x <- modresults[[2]]
+      track_y <- modresults[[3]]
+      
+      PMs[1, day, trial] <- modresults[[9]]
+      PMs[2, day, trial] <- modresults[[6]]
+      PMs[3, day, trial] <- modresults[[8]][4] * 100
+      PMs[4, day, trial] <- modresults[[8]][2] * 100
+      PMs[5, day, trial] <- modresults[[7]] * 100
+
+      if (plot_trajectories) {
+        plot(pool_diameter / 2 * cos(th), pool_diameter / 2 * sin(th), type = "l", xlab = paste("day", day, ", trial", trial), ylab = "trajectory")
+        lines(track_x, track_y, type = "l")
+        lines(platform_x + platform_radius * cos(th), platform_y + platform_radius * sin(th), type = "l")
+      }
+    }
+  }
+}else { 
+# run multiple times without plotting!
+
+for (reps in 1:Nruns){
+#Generate initial weights for each run
+weights <- matrix(runif(N_pc*N_ac), nrow = N_pc)*Wmult
+
+#Generate place cells for each run
+PC_x <- rep(0,N_pc) #1xN_pc matrix containing the x = 0 coordinate for each place cell
+PC_y <- rep(0,N_pc) #1xN_pc matrix containing the y = 0 coordinate for each place cell
+for (i in 1:N_pc) {
+  #For each place cell:
+  PC_x[i] <- (runif(1) - 0.5)*pool_diameter#Random positions of place cells
+  PC_y[i] <- (runif(1) - 0.5)*pool_diameter
+  while ((PC_x[i]^2 + PC_y[i]^2 > (pool_diameter/2)^2)){
+    #Checks for out of bounds
+    PC_x[i] <- (runif(1) - 0.5)*pool_diameter
+    PC_y[i] <- (runif(1) - 0.5)*pool_diameter
+  }
+}
+
+for (day in 1:Ndays){
+  idxs = sample(4)  #randomly choose 4 starting locations
+    for (trial in 1:Ntrials){
+      if (variable_platform == 1){
+        whichplatform = sample(c(1, -1), 1)
+        platform_x = abs(platform_x) * whichplatform
+        platform_y = abs(platform_y) * whichplatform
+      }
+      idx <- idxs[trial] #take each location
+      starting_x <- starting_xs[idx]
+      starting_y <- starting_ys[idx]
+
+      modresults <- run_trial_place (weights, Wmult, sigma_pc, sigma_ac, PC_x, PC_y, Vdecay, ac_const, beta, etdecay, alpha, gamma, Wnoise, platform_x, platform_y, starting_x, starting_y, speed, hitwall)
+      #run trial
+      weights <- modresults[[1]]
+      
+      PMs[1,day,trial,reps] <- modresults[[9]] #latency
+      PMs[2,day,trial,reps] <- modresults[[6]] #dist
+      PMs[3,day,trial,reps] <- modresults[[8]][4]*100 #target quadrant
+      PMs[4,day,trial,reps] <- modresults[[8]][2]*100 #opposite quadrant
+      PMs[5,day,trial,reps] <- modresults[[7]]*100 #wall zone
+      #record performance measures
+     }
+}
+}
+}
+
+if(pln > 0.5){
+  latency = PMs[1,,]
+  dist = PMs[2,,]
+  target_quadrant = PMs[3,,]
+  opposite_quadrant = PMs[4,,]
+  wall_zone = PMs[5,,]
+  latency_stats <- apply(latency, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+
+  day <- rep(1:Ndays, each = Ntrials)
+  trial <- rep(1:Ntrials, times = Ndays)
+  mean_latency <- as.vector(latency_stats[1,,])
+  se_latency <- as.vector(latency_stats[2,,])
+
+  latency_df <- data.frame(
+    Day = day,
+    Trial = trial,
+    MeanLatency = mean_latency,
+    SE = se_latency
+  )
+
+
+  latency_day <- latency_df %>%
+    group_by(Day) %>%
+    summarise(
+      latency = mean(MeanLatency),
+      se = sd(MeanLatency) / sqrt(n())
+    )
+
+
+  ggplot(latency_day, aes(x = Day, y = latency)) +
+    geom_line(color = "steelblue") +
+    geom_point(size = 2, color = "steelblue") +
+    geom_errorbar(aes(ymin = latency - se, ymax = latency + se), width = 0.2, alpha = 0.4) +
+    labs(
+      title = "Latency Across Training Days (Place Cell Model)",
+      x = "Training Day",
+      y = "Average Latency (s)"
+    ) +
+    theme_minimal()
+  
+  
+  }else{
+    latency = PMs[1,,,]
+    dist = PMs[2,,,]
+    target_quadrant = PMs[3,,,]
+    opposite_quadrant = PMs[4,,,]
+    wall_zone = PMs[5,,,]
+    day = c(1:Ndays)
+    latency = cbind(day,latency)
+    dist = cbind(day,dist)
+    target_quadrant = cbind(day,target_quadrant)
+    opposite_quadrant = cbind(day,opposite_quadrant)
+    wall_zone = cbind(day,wall_zone)
+    all = cbind(latency,dist[,2],target_quadrant[,2],opposite_quadrant[,2],wall_zone[,2])
+    colnames(all)=c("day","latency","dist","target_quadrant","opposite_quadrant","wall_zone")
+  
+    write.csv(all,"radius_1 vari.csv")
+  }
+
+#plot latency
+latency_pc <- latency
+latency_stats <- apply(latency, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+
+  day <- rep(1:Ndays, each = Ntrials)
+  trial <- rep(1:Ntrials, times = Ndays)
+  mean_latency <- as.vector(latency_stats[1,,])
+  se_latency <- as.vector(latency_stats[2,,])
+
+  latency_df_pc <- data.frame(
+    Day = day,
+    Trial = trial,
+    MeanLatency = mean_latency,
+    SE = se_latency
+  )
+
+
+  
+  latency_day_pc <- latency_df_pc %>%
+    group_by(Day) %>%
+    summarise(
+      latency = mean(MeanLatency),
+      se = sd(MeanLatency) / sqrt(n())
+    )
+
+
+  ggplot(latency_day_pc, aes(x = Day, y = latency)) +
+    geom_line(color = "steelblue") +
+    geom_point(size = 2, color = "steelblue") +
+    geom_errorbar(aes(ymin = latency - se, ymax = latency + se), width = 0.2, alpha = 0.4) +
+    labs(
+      title = "Latency Across Training Days (Place Cell Model)",
+      x = "Training Day",
+      y = "Average Latency (s)"
+    ) +
+    theme_minimal()
+
+# plot target quadrant time
+  
+target_quadrant_pc <-target_quadrant
+target_stats <- apply(target_quadrant, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+
+mean_target <- as.vector(target_stats[1,,])
+se_target <- as.vector(target_stats[2,,])
+
+
+day <- rep(1:Ndays, each = Ntrials)
+trial <- rep(1:Ntrials, times = Ndays)
+
+target_df_pc <- data.frame(
+  Day = day,
+  Trial = trial,
+  MeanTarget = mean_target,
+  SE = se_target
+)
+
+
+target_day_pc <- target_df_pc %>%
+  group_by(Day) %>%
+  summarise(
+    TargetTime = mean(MeanTarget),
+    se = sd(MeanTarget) / sqrt(n())
+  )%>%
+  mutate(Model = "Place Cell")
+
+ggplot(target_day_pc, aes(x = Day, y = TargetTime)) +
+  geom_line(color = "darkgreen") +
+  geom_point(size = 2, color = "darkgreen") +
+  geom_errorbar(aes(ymin = TargetTime - se, ymax = TargetTime + se), width = 0.2, alpha = 0.4) +
+  labs(
+    title = "Target Quadrant Time Across Training Days",
+    x = "Training Day",
+    y = "Time in Target Quadrant (%)"
+  ) +
+  theme_minimal()
+
+#plot opposite quandrant time
+
+opposite_quadrant_pc <- opposite_quadrant
+opposite_stats_pc <- apply(opposite_quadrant, c(1, 2), function(x) c(mean = mean(x), se = sd(x) / sqrt(length(x))))
+mean_opposite_pc <- as.vector(opposite_stats_pc[1,,])
+se_opposite_pc <- as.vector(opposite_stats_pc[2,,])
+
+
+day <- rep(1:Ndays, each = Ntrials)
+trial <- rep(1:Ntrials, times = Ndays)
+
+opposite_df_pc <- data.frame(
+  Day = day,
+  Trial = trial,
+  MeanOpposite = mean_opposite_pc,
+  SE = se_opposite_pc
+)
+
+
+opposite_day_pc <- opposite_df_pc %>%
+  group_by(Day) %>%
+  summarise(
+    OppositeTime = mean(MeanOpposite),
+    se = sd(MeanOpposite) / sqrt(n())
+  ) %>%
+  mutate(Model = "Place Cell")
+
+```
+
+## Run Distance Cell Model
+
+```{r}
+N_dc <- 30 #Population of distance cells [100..300]
+N_ac <- 36 #Population of action cells [25..50]
+
+plot_trajectories <- 0 #yes - 1, no - 0
+plot_cognitive_maps <- 0 #yes - 1, no - 0
+pln <- plot_trajectories + plot_cognitive_maps
+Nruns <- 25 #how many runs to run if not plotting anything
+variable_platform <- 1 #the platform is variable - 1, the platform is fixed - 0
+
+pool_diameter <- 1.4 #Maze diameter (\phi) in metres (m)
+platform_radius <- 0.06 #Platform radius (m)
+sigma_dc <- 0.1 #place cell sigma (standard deviation), in meters [0.05..0.2]
+sigma_ac <- 2 #action cell sigma (standard deviation), in action cells [1..3]
+
+etdecay <- 0.83 #Eligibility trace decay (lambda) [0.75..0.95] LESS THAN GAMMA!
+beta <- 6 #Exploration-exploitation factor (\beta) [0.5..12]
+alpha <- 0.01 #Learning rate (\alpha) [0.005..0.02]
+gamma <- 0.85 #Discount factor (\gamma) [0.75..0.95]
+
+Vdecay <- 0.82 #velocity decay [0.75..0.95]
+ac_const <- 0.02 #acceleration const [0.01..0.03]
+Wnoise <- 0.0002 #Weight noise [0.0001..0.0007]
+Wmult <- 0.1 #Weight multiplier [0.05..0.15]
+hitwall <- 0.5 #punishment for hitting the wall [0..1]
+speed <- 0.175 #mouse speed (m/s) [0.1..0.25]
+
+
+
+Ntrials <- 4 #number of trials per day
+Ndays <- 8 #number of days
+
+
+#performance measures to compute: latency, distance, time in target quadrant, opposite quadrant, and wall zone
+if (pln > 0.5) #if any plots
+{ PMs <- array(rep(0,5*Ndays*Ntrials), c(5,Ndays,Ntrials))
+} else {
+  PMs <- array(rep(0,5*Ndays*Ntrials*Nruns), c(5,Ndays,Ntrials,Nruns)) }
+#multiple runs
+
+
+#Platform coordinates:
+platform_x <- cos(-pi/4)*pool_diameter/4 #x coordinate
+platform_y <- sin(-pi/4)*pool_diameter/4 #y coordinate
+
+#Starting locations of the modeled animal (4 different ones):
+strad <- pool_diameter/2*0.85 #15% of maze radius to the wall
+starting_xs <- strad * c(cos(pi/6), cos(pi/3), cos(7*pi/6), cos(4*pi/3)) #x coordinates
+starting_ys <- strad * c(sin(pi/6), sin(pi/3), sin(7*pi/6), sin(4*pi/3)) #y coordinates
+
+th <- (0:100)/50*pi #for plotting circles :)
+
+if (pln > 0.5) {
+  
+#Generate initial weights
+weights <- matrix(runif(N_dc*N_ac), nrow = N_dc)*Wmult
+
+#Generate distance cells
+DC <- rep(0,N_dc)
+
+for (i in 1:N_dc) {
+  #For each place cell:
+  DC[i] <- runif(1)*(pool_diameter/2) #Random positions of distance cells
+
+}
+
+par(mfrow=c(1,4))
+
+
+for (day in 1:Ndays) {
+  idxs = sample(4) #randomly choose 4 starting locations
+  for (trial in 1:Ntrials){
+    if (variable_platform==1){ #the variable platform generation
+      whichplatform=sample(c(1,-1),1)
+      platform_x = platform_x*whichplatform
+      platform_y = platform_y*whichplatform
+    }
+    
+    
+    idx <- idxs[trial] #take each location
+    starting_x <- starting_xs[idx]
+    starting_y <- starting_ys[idx]
+    
+    modresults <- run_trial_distance(weights, Wmult, sigma_dc, sigma_ac, DC, Vdecay, ac_const, beta, etdecay, alpha, gamma, Wnoise, platform_x, platform_y, starting_x, starting_y, speed, hitwall)
+    #run trial
+    weights <- modresults[[1]]
+    track_x <- modresults[[2]]
+    track_y <- modresults[[3]]
+    vel_x <- modresults[[4]]
+    vel_y <- modresults[[5]]
+    
+    #        weights <- wres
+    
+    PMs[1,day,trial] <- modresults[[9]] #latency
+    PMs[2,day,trial] <- modresults[[6]] #dist
+    PMs[3,day,trial] <- modresults[[8]][4]*100 #target quadrant
+    PMs[4,day,trial] <- modresults[[8]][2]*100 #opposite quadrant
+    PMs[5,day,trial] <- modresults[[7]]*100 #wall zone
+    #record performance measures
+    
+    if (plot_trajectories&((day==1&trial==1)|(day==8&trial==4)))
+    {
+      #plot the maze
+      plot(pool_diameter/2*cos(th),pool_diameter/2*sin(th),type = "l", xlab = paste("day ",day,", trial ",trial), ylab = "trajectory")
+      #plot the trajectory
+      lines(track_x, track_y, type = "l")
+      #plot the platform
+      lines(platform_x+platform_radius*cos(th),platform_y+platform_radius*sin(th),type = "l")
+    }
+    
+    if (plot_cognitive_maps&((day==1&trial==1)|(day==8&trial==4))){
+      #plot the maze
+      plot(pool_diameter/2*cos(th),pool_diameter/2*sin(th),type = "l",xlab = paste("day ",day,", trial ",trial), ylab = "cognitive map")
+      #plot the cognitive map
+      for (x in (-3:3)*(pool_diameter/6)){
+        for (y in (-3:3)*(pool_diameter/6)){
+          if (x^2 + y^2 <= (pool_diameter/2)^2){
+            x2 = x
+            y2 = y
+            dist.to.wall = pool_diameter/2-sqrt(x2^2+y2^2)
+            for (k in 1:N_ac){
+              DC_activation <- rep(0,N_dc)
+              for (i in 1:N_dc){
+                DC_activation[i] <- exp(-(dist.to.wall -DC[i])^2/(2*sigma_dc^2))
+              }
+              #Calculate AC activation (i.e. value of the action)
+              AC_activation <- rep(0,N_ac)
+              for (i in 1:N_ac){
+                for (j in 1:N_dc){
+                  AC_activation[i] <- AC_activation[i] + DC_activation[j]*weights[j,i]
+                }
+              }
+              #direction of AC activation
+              if(x>=0){
+                central.angle = atan(y/x)
+              } else {
+                central.angle = pi+atan(y/x)
+              }
+              
+              moving.dir = pi+central.angle+k/N_ac*2*pi
+              
+              x2 <- c(x2, x + (AC_activation[k]/10)*cos(moving.dir))
+              y2 <- c(y2, y + (AC_activation[k]/10)*sin(moving.dir))
+              #                 line([x x2],[y y2],'Color',[k/N_ac 0 1-k/N_ac])
+            }
+            lines(x2,y2,type = "l",col = "blue")
+          }
+        }
+      }
+      # plot the platform
+      lines(platform_x+platform_radius*cos(th),platform_y+platform_radius*sin(th),type = "l")
+    }
+  }
+}
+
+
+}else {
+  # run multiple times without plotting!
+  
+  for (reps in 1:Nruns){
+    #Generate initial weights for each run
+    weights <- matrix(runif(N_dc*N_ac), nrow = N_dc)*Wmult
+    print(reps)
+    #Generate distance cells for each run
+    DC <- rep(0,N_dc) #1xN_dc matrix containing the each place cell
+    for (i in 1:N_dc) {
+      #For each place cell:
+      # DC[i] <- runif(1)*(pool_diameter/2)#Random positions of distance cells
+      DC[i] <- runif(1)*(pool_diameter)#Random positions of distance cells
+    }
+    
+    for (day in 1:Ndays){
+      idxs = sample(4)  #randomly choose 4 starting locations
+      for (trial in 1:Ntrials){
+        
+        if (variable_platform==1){ #the variable platform generation
+          whichplatform=sample(c(1,-1),1)
+          platform_x = platform_x*whichplatform
+          platform_y = platform_y*whichplatform
+        }
+        
+        idx <- idxs[trial] #take each location
+        starting_x <- starting_xs[idx]
+        starting_y <- starting_ys[idx]
+        
+        modresults <- run_trial_distance (weights, Wmult, sigma_dc, sigma_ac, DC, Vdecay, ac_const, beta, etdecay, alpha, gamma, Wnoise, platform_x, platform_y, starting_x, starting_y, speed, hitwall)
+        #run trial
+        weights <- modresults[[1]]
+        
+        PMs[1,day,trial,reps] <- modresults[[9]] #latency
+        PMs[2,day,trial,reps] <- modresults[[6]] #dist
+        PMs[3,day,trial,reps] <- modresults[[8]][4]*100 #target quadrant
+        PMs[4,day,trial,reps] <- modresults[[8]][2]*100 #opposite quadrant
+        PMs[5,day,trial,reps] <- modresults[[7]]*100 #wall zone
+        #record performance measures
+      }
+    }
+  }
+}
+
+library(tidyr)
+library(ggplot2)
+
+
+if(pln > 0.5){
+  latency = PMs[1,,]
+  dist = PMs[2,,]
+  target_quadrant = PMs[3,,]
+  opposite_quadrant = PMs[4,,]
+  wall_zone = PMs[5,,]
+  
+  latency_stats <- apply(latency, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+
+  day <- rep(1:Ndays, each = Ntrials)
+  trial <- rep(1:Ntrials, times = Ndays)
+  mean_latency <- as.vector(latency_stats[1,,])
+  se_latency <- as.vector(latency_stats[2,,])
+
+  latency_df <- data.frame(
+    Day = day,
+    Trial = trial,
+    MeanLatency = mean_latency,
+    SE = se_latency
+  )
+
+
+  latency_day <- latency_df %>%
+    group_by(Day) %>%
+    summarise(
+      latency = mean(MeanLatency),
+      se = sd(MeanLatency) / sqrt(n())
+    )
+
+
+  ggplot(latency_day, aes(x = Day, y = latency)) +
+    geom_line(color = "steelblue") +
+    geom_point(size = 2, color = "steelblue") +
+    geom_errorbar(aes(ymin = latency - se, ymax = latency + se), width = 0.2, alpha = 0.4) +
+    labs(
+      title = "Latency Across Training Days (Place Cell Model)",
+      x = "Training Day",
+      y = "Average Latency (s)"
+    ) +
+    theme_minimal()
+  
+  
+}else{
+  latency = PMs[1,,,]
+  dist = PMs[2,,,]
+  target_quadrant = PMs[3,,,]
+  opposite_quadrant = PMs[4,,,]
+  wall_zone = PMs[5,,,]
+  day = c(1:Ndays)
+  latency = cbind(day,latency)
+  dist = cbind(day,dist)
+  target_quadrant = cbind(day,target_quadrant)
+  opposite_quadrant = cbind(day,opposite_quadrant)
+  wall_zone = cbind(day,wall_zone)
+  all = cbind(latency,dist[,2],target_quadrant[,2],opposite_quadrant[,2],wall_zone[,2])
+  colnames(all)=c("day","latency","dist","target_quadrant","opposite_quadrant","wall_zone")
+  
+  write.csv(all,"radius_1 vari.csv")
+}
+
+
+
+# par(mfrow=c(1,1))
+# plot(latency,latency~day)
+
+#plot latency curve
+
+latency_dc <- latency
+latency_stats <- apply(latency, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+
+  day <- rep(1:Ndays, each = Ntrials)
+  trial <- rep(1:Ntrials, times = Ndays)
+  mean_latency <- as.vector(latency_stats[1,,])
+  se_latency <- as.vector(latency_stats[2,,])
+
+  latency_df_dc <- data.frame(
+    Day = day,
+    Trial = trial,
+    MeanLatency = mean_latency,
+    SE = se_latency
+  )
+
+
+  latency_day_dc <- latency_df_dc %>%
+    group_by(Day) %>%
+    summarise(
+      latency = mean(MeanLatency),
+      se = sd(MeanLatency) / sqrt(n())
+    )
+
+
+  ggplot(latency_day_dc, aes(x = Day, y = latency)) +
+    geom_line(color = "steelblue") +
+    geom_point(size = 2, color = "steelblue") +
+    geom_errorbar(aes(ymin = latency - se, ymax = latency + se), width = 0.2, alpha = 0.4) +
+    labs(
+      title = "Latency Across Training Days (Distance Cell Model)",
+      x = "Training Day",
+      y = "Average Latency (s)"
+    ) +
+    theme_minimal()
+  
+#plot target quadrant time
+  
+target_dc <- target_quadrant
+# 计算 mean & SE
+target_stats <- apply(target_quadrant, c(1,2), function(x) c(mean = mean(x), se = sd(x)/sqrt(length(x))))
+
+# 展开为向量
+mean_target <- as.vector(target_stats[1,,])
+se_target <- as.vector(target_stats[2,,])
+
+# 构建 dataframe
+day <- rep(1:Ndays, each = Ntrials)
+trial <- rep(1:Ntrials, times = Ndays)
+
+target_df_dc <- data.frame(
+  Day = day,
+  Trial = trial,
+  MeanTarget = mean_target,
+  SE = se_target
+)
+
+# 按天汇总
+target_day_dc <- target_df_dc %>%
+  group_by(Day) %>%
+  summarise(
+    TargetTime = mean(MeanTarget),
+    se = sd(MeanTarget) / sqrt(n())
+  )%>%
+  mutate(Model = "Distance Cell")
+
+# 绘图
+ggplot(target_day_dc, aes(x = Day, y = TargetTime)) +
+  geom_line(color = "darkgreen") +
+  geom_point(size = 2, color = "darkgreen") +
+  geom_errorbar(aes(ymin = TargetTime - se, ymax = TargetTime + se), width = 0.2, alpha = 0.4) +
+  labs(
+    title = "Target Quadrant Time Across Training Days",
+    x = "Training Day",
+    y = "Time in Target Quadrant (%)"
+  ) +
+  theme_minimal()
+
+#plot opposite quadrant time 
+
+opposite_quadrant_dc <- opposite_quadrant
+
+opposite_stats_dc <- apply(opposite_quadrant, c(1, 2), function(x) c(mean = mean(x), se = sd(x) / sqrt(length(x))))
+mean_opposite_dc <- as.vector(opposite_stats_dc[1,,])
+se_opposite_dc <- as.vector(opposite_stats_dc[2,,])
+
+opposite_df_dc <- data.frame(
+  Day = day,
+  Trial = trial,
+  MeanOpposite = mean_opposite_dc,
+  SE = se_opposite_dc
+)
+
+opposite_day_dc <- opposite_df_dc %>%
+  group_by(Day) %>%
+  summarise(
+    OppositeTime = mean(MeanOpposite),
+    se = sd(MeanOpposite) / sqrt(n())
+  ) %>%
+  mutate(Model = "Distance Cell")
+
+```
+
+## Plot and Compare Results
+
+```{r}
+#plot latency comparison
+latency_day_pc$Model <- "Place Cell"
+latency_day_dc$Model <- "Distance Cell"
+latency_compare <- rbind(latency_day_pc, latency_day_dc)
+library(ggplot2)
+
+ggplot(latency_compare, aes(x = Day, y = latency, color = Model)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = latency - se, ymax = latency + se), width = 0.2, alpha = 0.3) +
+  labs(
+    title = "Latency Comparison",
+    x = "Training Day",
+    y = "Average Latency (s)"
+  ) +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "darkorange")) +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = c("Distance Cell" = "orange", "Place Cell" = "steelblue")) +
+  annotate("text", x = 2, y = 24.5, label = "*", size = 6)
+
+
+#plot target quadrant time comparison
+target_compare <- rbind(target_day_pc, target_day_dc)
+
+ggplot(target_compare, aes(x = Day, y = TargetTime, color = Model)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = TargetTime - se, ymax = TargetTime + se), width = 0.2, alpha = 0.3) +
+  labs(
+    title = "Target Quadrant Time Comparison",
+    x = "Training Day",
+    y = "Time in Target Quadrant (%)"
+  ) +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "darkorange")) +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = c("Distance Cell" = "orange", "Place Cell" = "steelblue")) +
+  annotate("text", x = 1:8, y = rep(15.5, 8), label = rep("*", 8), size = 5)
+
+#plot opposite quadrant time comparison
+
+opposite_compare <- rbind(opposite_day_pc, opposite_day_dc)
+
+ggplot(opposite_compare, aes(x = Day, y = OppositeTime, color = Model)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = OppositeTime - se, ymax = OppositeTime + se), width = 0.2, alpha = 0.3) +
+  labs(
+    title = "Opposite Quadrant Time Comparison",
+    x = "Training Day",
+    y = "Time in Opposite Quadrant (%)"
+  ) +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "darkorange")) +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = c("Distance Cell" = "orange", "Place Cell" = "steelblue")) +
+  annotate("text", x = 2, y = 14.5, label = "**", size = 5) +
+  annotate("text", x = 4, y = 14.5, label = "***", size = 5) +
+  annotate("text", x = 5, y = 14.5, label = "**", size = 5) +
+  annotate("text", x = 6, y = 14.5, label = "***", size = 5) +
+  annotate("text", x = 7, y = 14.5, label = "*", size = 5) +
+  annotate("text", x = 8, y = 14.5, label = "**", size = 5)
+
+```
+
+## Statistic analysis
+
+```{r}
+# === 把三个性能指标提取成长格式数据框 ===
+extract_long_df <- function(PMs_array, measure_name) {
+  values <- as.vector(PMs_array)
+  day <- rep(rep(1:Ndays, each = Ntrials), times = Nruns * 2)
+  trial <- rep(rep(1:Ntrials, times = Ndays), times = Nruns * 2)
+  run <- rep(1:Nruns, each = Ndays * Ntrials, times = 2)
+  model <- rep(c("Place Cell", "Distance Cell"), each = Ndays * Ntrials * Nruns)
+  
+  data.frame(
+    Run = factor(run),
+    Day = factor(day),
+    Trial = trial,
+    Model = factor(model),
+    Value = values,
+    Measure = measure_name
+  )
+}
+
+# === 提取三个指标 ===
+df_latency <- extract_long_df(rbind(latency_pc, latency_dc), "Latency")
+df_target  <- extract_long_df(rbind(opposite_quadrant_pc, opposite_quadrant_dc), "Target")
+df_opposite <- extract_long_df(rbind(target_quadrant_pc, target_dc), "Opposite")
+
+# ===== LATENCY =====
+cat("===== LATENCY ANALYSIS =====\n")
+mod_latency <- lmer(Value ~ Day * Model + (1|Run), data = df_latency)
+summary(mod_latency)
+
+# 后续 pairwise 对比（每一天比较 Place vs Distance）
+em_latency <- emmeans(mod_latency, ~ Model | Day)
+pairs(em_latency)
+
+# ===== TARGET QUADRANT TIME =====
+cat("\n===== TARGET QUADRANT TIME ANALYSIS =====\n")
+mod_target <- lmer(Value ~ Day * Model + (1|Run), data = df_target)
+summary(mod_target)
+em_target <- emmeans(mod_target, ~ Model | Day)
+pairs(em_target)
+
+# ===== OPPOSITE QUADRANT TIME =====
+cat("\n===== OPPOSITE QUADRANT TIME ANALYSIS =====\n")
+mod_opposite <- lmer(Value ~ Day * Model + (1|Run), data = df_opposite)
+summary(mod_opposite)
+em_opposite <- emmeans(mod_opposite, ~ Model | Day)
+pairs(em_opposite)
+
+```
+
+
+## Deal with the real experimental data
+
+```{r}
+experimental_data <- read_excel("D:/data/WMdataLong.xlsx")
+colnames(experimental_data)[1] <- "Variable"
+# 定义变量映射：latency (1), target quadrant time (2), opposite quadrant time (10)
+behavior_vars <- list(
+  latency = 1,
+  target = 2,
+  opposite = 10
+)
+
+# 筛选条件：只保留 variable platform + C57BL/6
+data_c57 <- experimental_data %>%
+  filter(Condition == 2, Strain == 1)
+
+# 可视化函数
+plot_behavior <- function(df, varcode, varname, ylabel) {
+  df_var <- df %>%
+    filter(Variable == varcode) %>%
+    group_by(Day) %>%
+    summarise(
+      mean_value = mean(Value, na.rm = TRUE),
+      se = sd(Value, na.rm = TRUE) / sqrt(n())
+    )
+
+  ggplot(df_var, aes(x = Day, y = mean_value)) +
+    geom_line(color = "steelblue") +
+    geom_point(size = 2, color = "steelblue") +
+    geom_errorbar(aes(ymin = mean_value - se, ymax = mean_value + se),
+                  width = 0.2, alpha = 0.4) +
+    labs(
+      title = paste(varname, "Across Training Days (C57BL/6, Variable Platform)"),
+      x = "Training Day",
+      y = ylabel
+    ) +
+    theme_minimal()
+}
+
+# 绘制三张图
+plot_behavior(data_c57, behavior_vars$latency, "Latency", "Latency (s)")
+plot_behavior(data_c57, behavior_vars$target, "Target Quadrant Time", "Proportion in Target Quadrant")
+plot_behavior(data_c57, behavior_vars$opposite, "Opposite Quadrant Time", "Proportion in Opposite Quadrant")
+```
+
+```{r}
+
+# 从实验数据中提取 latency（Variable == 1）并汇总
+exp_latency <- data_c57 %>%
+  filter(Variable == 1) %>%
+  group_by(Day) %>%
+  summarise(
+    Latency = mean(Value, na.rm = TRUE),
+    SE = sd(Value, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  mutate(Model = "Actual", Source = "Experiment")
+
+latency_day_pc$Model <- "Place Cell"
+latency_day_dc$Model <- "Distance Cell"
+
+latency_day_pc$Source <- "Simulation"
+latency_day_dc$Source <- "Simulation"
+
+
+combined_latency <- bind_rows(
+  latency_day_pc %>% rename(Latency = latency),
+  latency_day_dc %>% rename(Latency = latency),
+  exp_latency
+)
+ggplot(combined_latency, aes(x = Day, y = Latency, color = Model, linetype = Source)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = Latency - SE, ymax = Latency + SE), width = 0.2, alpha = 0.4) +
+  labs(title = "Latency Comparison: Model vs Experiment",
+       x = "Training Day",
+       y = "Latency (s)") +
+  theme_minimal() +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "orange", "Actual" = "black")) +
+  scale_linetype_manual(values = c("Simulation" = "solid", "Experiment" = "dashed")) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# 提取 Target Quadrant Time（Variable == 2）
+exp_target <- data_c57 %>%
+  filter(Variable == 2) %>%
+  group_by(Day) %>%
+  summarise(
+    TargetTime = mean(Value, na.rm = TRUE),
+    SE = sd(Value, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  mutate(Model = "Actual", Source = "Experiment")
+
+# 提取 Opposite Quadrant Time（Variable == 10）
+exp_opposite <- data_c57 %>%
+  filter(Variable == 10) %>%
+  group_by(Day) %>%
+  summarise(
+    OppositeTime = mean(Value, na.rm = TRUE),
+    SE = sd(Value, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  mutate(Model = "Actual", Source = "Experiment")
+
+# 乘以100将比例转为百分比
+exp_target <- exp_target %>%
+  mutate(TargetTime = TargetTime * 100, SE = SE * 100)
+
+exp_opposite <- exp_opposite %>%
+  mutate(OppositeTime = OppositeTime * 100, SE = SE * 100)
+
+
+target_day_pc$Model <- "Place Cell"
+target_day_dc$Model <- "Distance Cell"
+target_day_pc$Source <- "Simulation"
+target_day_dc$Source <- "Simulation"
+
+opposite_day_pc$Model <- "Place Cell"
+opposite_day_dc$Model <- "Distance Cell"
+opposite_day_pc$Source <- "Simulation"
+opposite_day_dc$Source <- "Simulation"
+
+# 统一列名
+target_day_pc <- rename(target_day_pc, TargetTime = TargetTime)
+target_day_dc <- rename(target_day_dc, TargetTime = TargetTime)
+
+opposite_day_pc <- rename(opposite_day_pc, OppositeTime = OppositeTime)
+opposite_day_dc <- rename(opposite_day_dc, OppositeTime = OppositeTime)
+# Target Time
+combined_target <- bind_rows(
+  target_day_pc,
+  target_day_dc,
+  exp_target
+)
+
+# Opposite Time
+combined_opposite <- bind_rows(
+  opposite_day_pc,
+  opposite_day_dc,
+  exp_opposite
+)
+ggplot(combined_target, aes(x = Day, y = TargetTime, color = Model, linetype = Source)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = TargetTime - se, ymax = TargetTime + se), width = 0.2, alpha = 0.4) +
+  labs(title = "Target Quadrant Time: Model vs Experiment",
+       x = "Training Day",
+       y = "Time in Target Quadrant (%)") +
+  theme_minimal() +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "orange", "Actual" = "black")) +
+  scale_linetype_manual(values = c("Simulation" = "solid", "Experiment" = "dashed")) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggplot(combined_opposite, aes(x = Day, y = OppositeTime, color = Model, linetype = Source)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = OppositeTime - se, ymax = OppositeTime + se), width = 0.2, alpha = 0.4) +
+  labs(title = "Opposite Quadrant Time: Model vs Experiment",
+       x = "Training Day",
+       y = "Time in Opposite Quadrant (%)") +
+  theme_minimal() +
+  scale_color_manual(values = c("Place Cell" = "steelblue", "Distance Cell" = "orange", "Actual" = "black")) +
+  scale_linetype_manual(values = c("Simulation" = "solid", "Experiment" = "dashed")) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cor(latency_day_pc$latency, exp_latency$Latency)
+cor(latency_day_dc$latency, exp_latency$Latency)
+# Target quadrant time
+cor(target_day_pc$TargetTime, exp_target$TargetTime)
+cor(target_day_dc$TargetTime, exp_target$TargetTime)
+
+# Opposite quadrant time
+cor(opposite_day_pc$OppositeTime, exp_opposite$OppositeTime)
+cor(opposite_day_dc$OppositeTime, exp_opposite$OppositeTime)
+
+```
+## Summary
+
+This R Markdown file runs and compares both the place-cell and distance-cell based reinforcement learning models in a variable platform task. It supports visualizing behavioral outcomes such as learning curves and strategy maps for both models.
+
