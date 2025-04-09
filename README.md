@@ -20,8 +20,13 @@ This project compares two reinforcement learning models — a **place cell-based
 - `model.Rmd`:  
   R Markdown script that implements both models, runs simulations, generates plots, and performs statistical comparisons.
 
-- `WMdataLong.xlsx`:  
-  Real experimental behavioral data from C57BL/6 mice used for model validation and correlation analysis.
+- `MWMdata.xlsx`:  
+  Real experimental behavioral data from C57BL/6 mice used for model validation and correlation analysis. Data explanation:
+  #Condition: 1 - fixed hidden platform (standard WM), 2 - variable hidden platform (randomly changing between 2 opposite locations)
+  #Behavioural variables: 1 - latency (s), 2 - proportion of time in target quadrant (not including wall zone), 3 - proportion of time in wall zone, 4 - swim speed (cm/s)
+  #5 - proportion of distance in target quadrant, 6 - proportion of distance in wall zone, 7 - total swim distance (cm), 8 - cumulative distance to platform (cm),
+  #9 - proportion of distance in opposite quadrant, 10 - proportion of time in opposite quadrant, 11 - mean absolute turning angle, 12 - swim speed st.d.
+  #Strain: 1 - C57BL/6, 2 - DBA/2
 
 - Output figures:  
   Included in the R Markdown output and used in the final report for comparing model and experimental outcomes.
@@ -59,7 +64,7 @@ library(readxl)
 
 ```
 ├── model.Rmd                # Main simulation and analysis script
-├── WMdataLong.xlsx          # Real behavioral data
+├── MWMdata.xlsx          # Real behavioral data
 ├── figures/                 # Output figures (optional)
 └── README.md                # This file
 ```
