@@ -821,9 +821,6 @@ for (day in 1:Ndays) {
   }
 }
 
-library(tidyr)
-library(ggplot2)
-
 
 if(pln > 0.5){
   latency = PMs[1,,]
