@@ -34,7 +34,7 @@ This project compares two reinforcement learning (RL) models — a **place cell-
   - `Variables`: latency, quadrant time, swim speed, distance metrics, etc.
 
 - **`Seperate parts of model/`**  
-  Optional R scripts containing modularized code for specific functions (e.g., learning rule, plotting, parameter tuning). Useful for debugging and extension.
+  Optional R scripts containing code for each section. Useful for debugging and extension.
 
 - **Output figures**  
   Automatically generated via `model.Rmd`. Used in the final report for comparison with empirical results.
