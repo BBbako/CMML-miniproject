@@ -46,7 +46,7 @@ This project compares two reinforcement learning models — a **place cell-based
 1. Clone or download this repository.
 2. Open `model.Rmd` in RStudio.
 3. Click **"Knit to PDF"** to run simulations and generate visualizations.
-4. Make sure the file `WMdataLong.xlsx` is in the same directory.
+4. Make sure the file `MWMdata.xlsx` is in the same directory.
 
 ### Required R packages:
 
