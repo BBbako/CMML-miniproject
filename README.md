@@ -1,55 +1,62 @@
 ---
 
-# Spatial Learning Models in Variable Platform Water Maze Task
+# 🧭 Spatial Learning Models in Variable Platform Water Maze Task
 
-This project compares two reinforcement learning models — a **place cell-based model** and a **distance cell-based model** — in a Morris Water Maze task with **variable platform positions**. The aim is to investigate how these models reproduce spatial learning behavior and how well they align with **experimental data from C57BL/6 mice**.
-
-##  Project Goals
-
-1. **Compare performance** of place-cell and distance-cell models in a spatial learning task where platform locations vary between trials.
-2. **Test if and when** the place model can outperform the distance model.
-3. **Evaluate** which model better reproduces patterns observed in real experimental data, using metrics like:
-   - **Latency**
-   - **Target quadrant time**
-   - **Opposite quadrant time**
+This project compares two reinforcement learning (RL) models — a **place cell-based model** and a **distance cell-based model** — in a simulated Morris Water Maze task where platform locations vary randomly across trials. The goal is to investigate how well each model captures spatial learning patterns and aligns with empirical data from **C57BL/6 mice**.
 
 ---
 
-##  Contents
+## 🎯 Project Objectives
 
-- `model.Rmd`:  
-  R Markdown script that implements both models, runs simulations, generates plots, and performs statistical comparisons.
+- Compare the performance of place cell and distance cell models in a spatial task with variable platform locations.
+- Identify **if and when** the place model outperforms the distance model under certain parameter settings.
+- Evaluate how well each model replicates experimental behavior, using:
+  - **Latency** to find the platform  
+  - **Time in target quadrant**  
+  - **Time in opposite quadrant**
 
-- `MWMdata.xlsx`:  
-  Real experimental behavioral data from C57BL/6 mice used for model validation and correlation analysis. Data explanation:
-  #Condition: 1 - fixed hidden platform (standard WM), 2 - variable hidden platform (randomly changing between 2 opposite locations)
-  #Behavioural variables: 1 - latency (s), 2 - proportion of time in target quadrant (not including wall zone), 3 - proportion of time in wall zone, 4 - swim speed (cm/s)
-  #5 - proportion of distance in target quadrant, 6 - proportion of distance in wall zone, 7 - total swim distance (cm), 8 - cumulative distance to platform (cm),
-  #9 - proportion of distance in opposite quadrant, 10 - proportion of time in opposite quadrant, 11 - mean absolute turning angle, 12 - swim speed st.d.
-  #Strain: 1 - C57BL/6, 2 - DBA/2
+---
 
-- Output figures:  
-  Included in the R Markdown output and used in the final report for comparing model and experimental outcomes.
+## 📂 Repository Contents
+
+- **`model.Rmd`**  
+  Main R Markdown file that:
+  - Implements both RL models
+  - Runs simulations under variable platform conditions
+  - Performs statistical comparisons
+  - Generates all key plots and summary statistics
+
+- **`MWMdata.xlsx`**  
+  Experimental behavioral data from C57BL/6 mice in the same task.  
+  Key metadata (from file header):
+  - `Condition`: 1 = fixed platform; 2 = variable platform  
+  - `Strain`: 1 = C57BL/6, 2 = DBA/2  
+  - `Variables`: latency, quadrant time, swim speed, distance metrics, etc.
+
+- **`Seperate parts of model/`**  
+  Optional R scripts containing modularized code for specific functions (e.g., learning rule, plotting, parameter tuning). Useful for debugging and extension.
+
+- **Output figures**  
+  Automatically generated via `model.Rmd`. Used in the final report for comparison with empirical results.
 
 ---
 
 ## 📊 Key Results
 
-- **Distance model** learns faster and aligns more closely with experimental latency and opposite quadrant time.
-- **Place model**, with tuned parameters, shows improved **goal-specific search** and eventually outperforms the distance model in later training days.
-- Neither model fully captures the **gradual increase** in target quadrant preference seen in mice.
+- The **distance model** learns faster and shows closer correlation with real data in **latency** and **opposite quadrant time**.
+- After parameter tuning, the **place model** demonstrates more goal-specific search and **outperforms** the distance model in later stages.
+- Neither model fully reproduces the gradual increase in **target quadrant preference** observed in real mice behavior.
 
 ---
 
-## 🧠 How to Use
+## ▶️ How to Run
 
-1. Clone or download this repository.
-2. Open `model.Rmd` in RStudio.
-3. Click **"Knit to PDF"** to run simulations and generate visualizations.
-4. Make sure the file `MWMdata.xlsx` is in the same directory.
+1. **Clone or download** the repository.
+2. Open `model.Rmd` in **RStudio**.
+3. Ensure `MWMdata.xlsx` is in the same folder.
+4. Click **"Knit to PDF"** to run full simulations and generate outputs.
 
-### Required R packages:
-
+**Required R packages**:
 ```r
 library(tidyverse)
 library(lme4)
@@ -60,15 +67,14 @@ library(readxl)
 
 ---
 
-## 📁 Structure
+## 🧱 Directory Structure
 
 ```
-├── model.Rmd                # Main simulation and analysis script
-├── MWMdata.xlsx          # Real behavioral data
-├── figures/                 # Output figures (optional)
-└── README.md                # This file
+├── model.Rmd                  # Main simulation + analysis script
+├── MWMdata.xlsx              # Real mouse behavioral data
+├── Seperate parts of model/  # Modular R scripts (optional use)
+├── figures/                  # Output figures (optional folder)
+└── README.md                 # This file
 ```
-
----
 
 ---
